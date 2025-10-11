@@ -1,4 +1,4 @@
-import { BscFile, FunctionExpression, BsDiagnostic, Range, isForStatement, isForEachStatement, isIfStatement, isAssignmentStatement, isNamespaceStatement, NamespaceStatement, Expression, isVariableExpression, isBinaryExpression, TokenKind, Scope, CallableContainerMap, DiagnosticSeverity, isLiteralInvalid, isWhileStatement, isCatchStatement, isLabelStatement, isGotoStatement, NamespacedVariableNameExpression, ParseMode, util, isMethodStatement, isTryCatchStatement } from 'brighterscript';
+import { BscFile, FunctionExpression, BsDiagnostic, Range, isForStatement, isForEachStatement, isIfStatement, isAssignmentStatement, isNamespaceStatement, NamespaceStatement, Expression, isVariableExpression, isBinaryExpression, TokenKind, Scope, CallableContainerMap, DiagnosticSeverity, isLiteralInvalid, isWhileStatement, isCatchStatement, isLabelStatement, isGotoStatement, NamespacedVariableNameExpression, ParseMode, util, isMethodStatement, isTryCatchStatement, isContinueStatement } from 'brighterscript';
 import { LintState, StatementInfo, NarrowingInfo, VarInfo, VarRestriction } from '.';
 import { PluginContext } from '../../util';
 
@@ -190,6 +190,19 @@ export function createVarLinter(
             setLocal(state.parent, stat.name, isForStatement(state.parent.stat) ? VarRestriction.Iterator : undefined);
         } else if (isCatchStatement(stat) && state.parent) {
             setLocal(curr, stat.exceptionVariable, VarRestriction.CatchedError);
+        } else if (isContinueStatement(stat)) {
+            // Mark the containing loop as having a continue statement
+            const { stack, blocks } = state;
+            for (let i = stack.length - 1; i >= 0; i--) {
+                const loopStat = stack[i];
+                if (isForStatement(loopStat) || isForEachStatement(loopStat) || isWhileStatement(loopStat)) {
+                    const loopBlock = blocks.get(loopStat);
+                    if (loopBlock) {
+                        loopBlock.hasContinue = true;
+                    }
+                    break;
+                }
+            }
         } else if (isLabelStatement(stat) && !foundLabelAt) {
             foundLabelAt = stat.range.start.line;
         } else if (foundLabelAt && isGotoStatement(stat) && state.parent) {
@@ -273,6 +286,11 @@ export function createVarLinter(
                     if (someParentLocal?.isUsed) {
                         local.isUsed = true;
                     }
+                    // If the loop has a continue statement and this variable is read within the loop,
+                    // mark it as used because it can affect subsequent iterations
+                    if (closed.hasContinue && closed.loopReadVars?.has(name)) {
+                        local.isUsed = true;
+                    }
                 }
                 parent.locals.set(name, local);
             });
@@ -298,6 +316,22 @@ export function createVarLinter(
             } else {
                 local.isUsed = true;
                 verifyVarCasing(local, expr.name);
+
+                // Track variables read within loops
+                const { stack, blocks } = state;
+                for (let i = stack.length - 1; i >= 0; i--) {
+                    const loopStat = stack[i];
+                    if (isForStatement(loopStat) || isForEachStatement(loopStat) || isWhileStatement(loopStat)) {
+                        const loopBlock = blocks.get(loopStat);
+                        if (loopBlock) {
+                            if (!loopBlock.loopReadVars) {
+                                loopBlock.loopReadVars = new Set();
+                            }
+                            loopBlock.loopReadVars.add(name.toLowerCase());
+                        }
+                        break;
+                    }
+                }
             }
 
             if (local.isUnsafe && !findSafeLocal(name)) {

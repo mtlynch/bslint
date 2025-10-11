@@ -19,6 +19,8 @@ export interface StatementInfo {
     branches?: number;
     returns?: boolean;
     narrows?: NarrowingInfo[];
+    hasContinue?: boolean;
+    loopReadVars?: Set<string>;
 }
 
 export enum VarRestriction {
