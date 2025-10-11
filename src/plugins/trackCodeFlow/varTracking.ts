@@ -35,6 +35,10 @@ export function resetVarContext(file: BscFile) {
     deferredValidation.set(file.pathAbsolute, []);
 }
 
+function isLoopStatement(stat: any): boolean {
+    return isForStatement(stat) || isForEachStatement(stat) || isWhileStatement(stat);
+}
+
 export function createVarLinter(
     lintContext: PluginContext,
     file: BscFile,
@@ -195,7 +199,7 @@ export function createVarLinter(
             const { stack, blocks } = state;
             for (let i = stack.length - 1; i >= 0; i--) {
                 const loopStat = stack[i];
-                if (isForStatement(loopStat) || isForEachStatement(loopStat) || isWhileStatement(loopStat)) {
+                if (isLoopStatement(loopStat)) {
                     const loopBlock = blocks.get(loopStat);
                     if (loopBlock) {
                         loopBlock.hasContinue = true;
@@ -261,7 +265,7 @@ export function createVarLinter(
             parent.locals = locals;
         } else {
             const isParentBranched = isIfStatement(parent.stat) || isTryCatchStatement(parent.stat);
-            const isLoop = isForStatement(closed.stat) || isForEachStatement(closed.stat) || isWhileStatement(closed.stat);
+            const isLoop = isLoopStatement(closed.stat);
             locals.forEach((local, name) => {
                 const parentLocal = parent.locals.get(name);
                 // if var is an iterator var, flag as partial
@@ -321,7 +325,7 @@ export function createVarLinter(
                 const { stack, blocks } = state;
                 for (let i = stack.length - 1; i >= 0; i--) {
                     const loopStat = stack[i];
-                    if (isForStatement(loopStat) || isForEachStatement(loopStat) || isWhileStatement(loopStat)) {
+                    if (isLoopStatement(loopStat)) {
                         const loopBlock = blocks.get(loopStat);
                         if (loopBlock) {
                             if (!loopBlock.loopReadVars) {
