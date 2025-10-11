@@ -76,3 +76,19 @@ function ok5()
         end if
     end for
 end function
+
+function ok6()
+    a = false
+    list = ["A", "B"]
+    for i = 0 to list.count() - 1
+        loopstart:
+        if list[i] = "A"
+            a = true
+            goto loopstart
+        end if
+
+        if a
+            a = false ' assume used
+        end if
+    end for
+end function

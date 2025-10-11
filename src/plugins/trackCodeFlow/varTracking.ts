@@ -211,15 +211,42 @@ export function createVarLinter(
             foundLabelAt = stat.range.start.line;
         } else if (foundLabelAt && isGotoStatement(stat) && state.parent) {
             // To avoid false positives when finding a goto statement,
-            // very generously mark as used all unused variables after 1st found label line.
+            // mark as used all variables that were set at or after the first label line.
             // This isn't accurate but tracking usage across goto jumps is tricky
             const { stack, blocks } = state;
             const labelLine = foundLabelAt;
+            const gotoLine = stat.range.start.line;
             for (let i = state.stack.length - 1; i >= 0; i--) {
                 const block = blocks.get(stack[i]);
                 block?.locals?.forEach(local => {
-                    if (local.range?.start.line > labelLine) {
+                    // Mark as used if:
+                    // 1. Variable is set at or after the label line AND before or at the goto line
+                    //    (these could be read in subsequent iterations)
+                    // 2. OR variable is set after the goto line (these will execute after goto
+                    //    and could be read when we loop back)
+                    if (local.range?.start.line >= labelLine && local.range?.start.line <= gotoLine) {
                         local.isUsed = true;
+                    } else if (local.range?.start.line > gotoLine) {
+                        // Variable set after goto - only mark as used if it's been read
+                        // or if there's a previous assignment of the same variable that was read
+                        if (local.isUsed) {
+                            // Already marked as used, keep it
+                        } else {
+                            // Check if this variable was used earlier in the function
+                            const key = local.name.toLowerCase();
+                            let wasUsedEarlier = false;
+                            for (let j = 0; j <= i; j++) {
+                                const checkBlock = blocks.get(stack[j]);
+                                const earlierLocal = checkBlock?.locals?.get(key);
+                                if (earlierLocal && earlierLocal.isUsed && earlierLocal !== local) {
+                                    wasUsedEarlier = true;
+                                    break;
+                                }
+                            }
+                            if (wasUsedEarlier) {
+                                local.isUsed = true;
+                            }
+                        }
                     }
                 });
             }
@@ -324,9 +351,9 @@ export function createVarLinter(
                 // Track variables read within loops
                 const { stack, blocks } = state;
                 for (let i = stack.length - 1; i >= 0; i--) {
-                    const loopStat = stack[i];
-                    if (isLoopStatement(loopStat)) {
-                        const loopBlock = blocks.get(loopStat);
+                    const stat = stack[i];
+                    if (isLoopStatement(stat)) {
+                        const loopBlock = blocks.get(stat);
                         if (loopBlock) {
                             if (!loopBlock.loopReadVars) {
                                 loopBlock.loopReadVars = new Set();
