@@ -23,6 +23,7 @@ interface ValidationInfo {
     local?: VarInfo;
     range: Range;
     namespace?: NamespacedVariableNameExpression;
+    functionId?: string;
 }
 
 const deferredValidation: Map<string, ValidationInfo[]> = new Map();
@@ -96,15 +97,43 @@ export function createVarLinter(
         if (!parent.locals) {
             parent.locals = new Map();
         } else {
-            verifyVarCasing(parent.locals.get(key), name);
+            const existingLocal = parent.locals.get(key);
+            verifyVarCasing(existingLocal, name);
+
+            // If there's already a local variable with the same name in this scope that was used,
+            // and we're in a loop context, preserve the usage information
+            if (existingLocal?.isUsed) {
+                // Check if we're in a loop by looking up the scope stack
+                const { blocks, stack } = state;
+                let isInLoop = false;
+                for (let i = stack.length - 1; i >= 0; i--) {
+                    const block = blocks.get(stack[i]);
+                    if (block && (isForStatement(block.stat) || isForEachStatement(block.stat) || isWhileStatement(block.stat))) {
+                        isInLoop = true;
+                        break;
+                    }
+                }
+
+                if (isInLoop) {
+                    local.isUsed = true;
+                }
+            }
         }
         parent.locals.set(key, local);
+
+        // Create a function identifier based on the function's range
+        let functionScope = parent;
+        while (functionScope && functionScope.parent) {
+            functionScope = functionScope.parent;
+        }
+        const functionId = `${functionScope?.stat?.range?.start?.line || 0}-${functionScope?.stat?.range?.start?.character || 0}`;
 
         deferred.push({
             kind: ValidationKind.Assignment,
             name: name.text,
             local: local,
-            range: name.range
+            range: name.range,
+            functionId: functionId
         });
 
         return local;
@@ -267,10 +296,10 @@ export function createVarLinter(
                 if (parentLocal?.restriction) {
                     local.restriction = parentLocal.restriction;
                 }
-                if (!local.isUsed && isLoop) {
+                if (isLoop) {
                     // avoid false positive if a local set in a loop isn't used
-                    const someParentLocal = findLocal(local.name);
-                    if (someParentLocal?.isUsed) {
+                    // but only if the parent local was used within the loop context
+                    if (parentLocal?.isUsed) {
                         local.isUsed = true;
                     }
                 }
@@ -353,13 +382,22 @@ export function createVarLinter(
     }
 
     function finalize(locals: Map<string, VarInfo>) {
-        locals.forEach(local => {
-            if (!local.isUsed && !local.restriction) {
+        // Run deferred validation for this function before checking for unused variables
+        runLocalDeferredValidation();
+
+        // check for unused variables (both locals and function parameters)
+        const allVariables = [...locals.values(), ...args.values()];
+
+        allVariables.forEach(variable => {
+            const isUnusedLocal = !variable.isParam && !variable.isUsed && !variable.restriction;
+            const isUnusedParam = variable.isParam && !variable.isUsed && variable.name !== 'm' && variable.name !== 'super';
+
+            if (isUnusedLocal || isUnusedParam) {
                 diagnostics.push({
                     severity: severity.unusedVariable,
                     code: VarLintError.UnusedVariable,
-                    message: `Variable '${local.name}' is set but value is never used`,
-                    range: local.range,
+                    message: `Variable '${variable.name}' is set but value is never used`,
+                    range: variable.range,
                     file: file
                 });
             }
@@ -374,6 +412,44 @@ export function createVarLinter(
                     range: arg.range,
                     file: file
                 });
+            }
+        });
+    }
+
+    function runLocalDeferredValidation() {
+        // Group deferred validations by function ID and variable name to check for usage patterns
+        const variablesByFunction = new Map<string, Map<string, ValidationInfo[]>>();
+        deferred.forEach(validation => {
+            if (validation.kind === ValidationKind.Assignment && validation.functionId) {
+                if (!variablesByFunction.has(validation.functionId)) {
+                    variablesByFunction.set(validation.functionId, new Map());
+                }
+
+                const functionVars = variablesByFunction.get(validation.functionId);
+                const key = validation.name.toLowerCase();
+                if (!functionVars.has(key)) {
+                    functionVars.set(key, []);
+                }
+                functionVars.get(key).push(validation);
+            }
+        });
+
+        deferred.forEach(({ kind, name, local, range, functionId }) => {
+            if (kind === ValidationKind.Assignment) {
+                // Only handle loop variable reassignment cases in deferred validation
+                // Let the regular finalize function handle normal unused variables
+                if (local && !local.isUsed && !local.restriction && !local.isParam && functionId) {
+                    // Check if any other assignment of the same variable in the same function was used
+                    const functionVars = variablesByFunction.get(functionId);
+                    const sameNameAssignments = functionVars?.get(name.toLowerCase()) || [];
+                    const hasUsedAssignment = sameNameAssignments.some(v => v.local && v.local !== local && v.local.isUsed);
+
+                    if (hasUsedAssignment) {
+                        // This is a loop variable case - the variable was used elsewhere
+                        // Mark this local as used to prevent finalize from flagging it
+                        local.isUsed = true;
+                    }
+                }
             }
         });
     }
@@ -434,7 +510,24 @@ function deferredVarLinter(
     deferred: ValidationInfo[],
     diagnostics: BsDiagnostic[]
 ) {
-    deferred.forEach(({ kind, name, local, range, namespace }) => {
+    // Group deferred validations by function ID and variable name to check for usage patterns
+    const variablesByFunction = new Map<string, Map<string, ValidationInfo[]>>();
+    deferred.forEach(validation => {
+        if (validation.kind === ValidationKind.Assignment && validation.functionId) {
+            if (!variablesByFunction.has(validation.functionId)) {
+                variablesByFunction.set(validation.functionId, new Map());
+            }
+
+            const functionVars = variablesByFunction.get(validation.functionId);
+            const key = validation.name.toLowerCase();
+            if (!functionVars.has(key)) {
+                functionVars.set(key, []);
+            }
+            functionVars.get(key).push(validation);
+        }
+    });
+
+    deferred.forEach(({ kind, name, local, range, namespace, functionId }) => {
         const key = name?.toLowerCase();
         let hasCallable = key ? callables.has(key) || toplevel.has(key) : false;
         if (key && !hasCallable && namespace) {
@@ -456,6 +549,28 @@ function deferredVarLinter(
                 // TODO else test case
                 break;
             case ValidationKind.Assignment:
+                // Only handle loop variable reassignment cases in deferred validation
+                // Let the regular finalize function handle normal unused variables
+                if (local && !local.isUsed && !local.restriction && !local.isParam && functionId) {
+                    // Check if any other assignment of the same variable in the same function was used
+                    const functionVars = variablesByFunction.get(functionId);
+                    const sameNameAssignments = functionVars?.get(key) || [];
+                    const hasUsedAssignment = sameNameAssignments.some(v => v.local && v.local !== local && v.local.isUsed);
+
+
+                    // Only flag as unused if no other assignment of the same variable was used
+                    // AND this is not a case where the loop variable logic should apply
+                    if (!hasUsedAssignment) {
+                        // This variable should be flagged by the regular finalize function
+                        // Don't add duplicate error here
+                    } else {
+                        // This is a loop variable case - the variable was used elsewhere
+                        // Remove the error that would be added by finalize by marking this local as used
+                        if (local) {
+                            local.isUsed = true;
+                        }
+                    }
+                }
                 break;
             case ValidationKind.Unsafe:
                 break;

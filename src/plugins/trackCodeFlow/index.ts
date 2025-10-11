@@ -14,7 +14,7 @@ export interface NarrowingInfo {
 
 export interface StatementInfo {
     stat: Statement;
-    parent?: Statement;
+    parent?: StatementInfo;
     locals?: Map<string, VarInfo>;
     branches?: number;
     returns?: boolean;
@@ -99,7 +99,7 @@ export default class TrackCodeFlow {
                 state.stack = stack;
                 curr = {
                     stat: stat,
-                    parent: stack[stack.length - 1],
+                    parent: stack.length > 1 ? state.blocks.get(stack[stack.length - 2]) : undefined,
                     branches: isBranchedStatement(stat) ? 2 : 1
                 };
                 returnLinter.visitStatement(curr);
@@ -113,7 +113,7 @@ export default class TrackCodeFlow {
                     state.ifs = curr;
                 } else if (isTryCatchStatement(opened)) {
                     state.trys = curr;
-                } else if (!curr.parent || isIfStatement(curr.parent) || isTryCatchStatement(curr.parent) || isCatchStatement(curr.parent)) {
+                } else if (!curr.parent || isIfStatement(curr.parent.stat) || isTryCatchStatement(curr.parent.stat) || isCatchStatement(curr.parent.stat)) {
                     state.branch = curr;
                 }
                 state.parent = curr;

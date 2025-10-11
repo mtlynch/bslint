@@ -61,3 +61,18 @@ sub ok4()
         end if
     end for
 end sub
+
+function ok5()
+    a = false
+    list = ["A", "B"]
+    for i = 0 to list.count() - 1
+        if list[i] = "A"
+            a = true
+            continue for
+        end if
+
+        if a
+            a = false ' assume used
+        end if
+    end for
+end function
